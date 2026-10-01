@@ -1,3 +1,5 @@
+![CI]
+(https://github.com/Niuromanhik/dns_resolver/actions/workflows/ci.yml/badge.svg)
 # dns_resolver
 
 Консольна утиліта для розв'язання DNS-запитів (A та AAAA записи), написана на Rust.
