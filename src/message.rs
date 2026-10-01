@@ -137,3 +137,168 @@ pub fn parse_response(buf: &[u8], expected_id: u16) -> Result<Vec<Answer>, DnsEr
     }
     Ok(answers)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Будує відповідь на основі запиту: ставить прапорці відповіді, rcode і додає answer-секцію.
+    fn response_with(id: u16, rcode: u16, ancount: u16, answer: &[u8]) -> Vec<u8> {
+        let mut buf = build_query(id, "example.com", RecordType::A).unwrap();
+        let flags = 0x8180u16 | rcode;
+        buf[2..4].copy_from_slice(&flags.to_be_bytes());
+        buf[6..8].copy_from_slice(&ancount.to_be_bytes());
+        buf.extend_from_slice(answer);
+        buf
+    }
+
+    fn a_answer(ip: [u8; 4], ttl: u32) -> Vec<u8> {
+        let mut v = vec![0xC0, 0x0C, 0, 1, 0, 1]; // вказівник на імʼя, TYPE=A, CLASS=IN
+        v.extend_from_slice(&ttl.to_be_bytes());
+        v.extend_from_slice(&[0, 4]);
+        v.extend_from_slice(&ip);
+        v
+    }
+
+    fn aaaa_answer(ip: [u8; 16], ttl: u32) -> Vec<u8> {
+        let mut v = vec![0xC0, 0x0C, 0, 28, 0, 1]; // TYPE=AAAA
+        v.extend_from_slice(&ttl.to_be_bytes());
+        v.extend_from_slice(&[0, 16]);
+        v.extend_from_slice(&ip);
+        v
+    }
+
+    #[test]
+    fn build_query_has_correct_bytes() {
+        let q = build_query(0x1234, "google.com", RecordType::A).unwrap();
+        let expected: Vec<u8> = vec![
+            0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, // header
+            6, b'g', b'o', b'o', b'g', b'l', b'e', 3, b'c', b'o', b'm', 0, // QNAME
+            0, 1, 0, 1, // QTYPE=A, QCLASS=IN
+        ];
+        assert_eq!(q, expected);
+    }
+
+    #[test]
+    fn build_query_aaaa_uses_type_28() {
+        let q = build_query(1, "a.b", RecordType::AAAA).unwrap();
+        let n = q.len();
+        assert_eq!(&q[n - 4..], &[0, 28, 0, 1]);
+    }
+
+    #[test]
+    fn build_query_accepts_trailing_dot() {
+        let with_dot = build_query(1, "google.com.", RecordType::A).unwrap();
+        let without = build_query(1, "google.com", RecordType::A).unwrap();
+        assert_eq!(with_dot, without);
+    }
+
+    #[test]
+    fn build_query_rejects_empty_label() {
+        assert!(matches!(
+            build_query(1, "bad..domain", RecordType::A),
+            Err(DnsError::InvalidDomain(_))
+        ));
+    }
+
+    #[test]
+    fn build_query_rejects_empty_domain() {
+        assert!(matches!(
+            build_query(1, "", RecordType::A),
+            Err(DnsError::InvalidDomain(_))
+        ));
+    }
+
+    #[test]
+    fn build_query_rejects_too_long_label() {
+        let domain = format!("{}.com", "a".repeat(64));
+        assert!(matches!(
+            build_query(1, &domain, RecordType::A),
+            Err(DnsError::InvalidDomain(_))
+        ));
+    }
+
+    #[test]
+    fn parse_a_record() {
+        let resp = response_with(7, 0, 1, &a_answer([1, 2, 3, 4], 300));
+        let answers = parse_response(&resp, 7).unwrap();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].address, "1.2.3.4");
+        assert_eq!(answers[0].ttl, 300);
+        assert_eq!(answers[0].record_type, RecordType::A);
+    }
+
+    #[test]
+    fn parse_aaaa_record() {
+        let mut ip = [0u8; 16];
+        ip[0] = 0x20;
+        ip[1] = 0x01;
+        ip[15] = 1; // 2001::1
+        let resp = response_with(7, 0, 1, &aaaa_answer(ip, 60));
+        let answers = parse_response(&resp, 7).unwrap();
+        assert_eq!(answers[0].address, "2001::1");
+        assert_eq!(answers[0].record_type, RecordType::AAAA);
+    }
+
+    #[test]
+    fn parse_multiple_answers() {
+        let mut answer = a_answer([1, 1, 1, 1], 10);
+        answer.extend(a_answer([8, 8, 8, 8], 20));
+        let resp = response_with(7, 0, 2, &answer);
+        let answers = parse_response(&resp, 7).unwrap();
+        assert_eq!(answers.len(), 2);
+        assert_eq!(answers[1].address, "8.8.8.8");
+    }
+
+    #[test]
+    fn parse_empty_answer_section() {
+        let resp = response_with(7, 0, 0, &[]);
+        assert!(parse_response(&resp, 7).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_nxdomain() {
+        let resp = response_with(7, 3, 0, &[]);
+        assert!(matches!(
+            parse_response(&resp, 7),
+            Err(DnsError::ServerError(3))
+        ));
+    }
+
+    #[test]
+    fn parse_id_mismatch() {
+        let resp = response_with(7, 0, 0, &[]);
+        assert!(matches!(
+            parse_response(&resp, 8),
+            Err(DnsError::IdMismatch)
+        ));
+    }
+
+    #[test]
+    fn parse_packet_shorter_than_header() {
+        assert!(matches!(
+            parse_response(&[0u8; 5], 0),
+            Err(DnsError::MalformedResponse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_truncated_rdata() {
+        let mut resp = response_with(7, 0, 1, &a_answer([1, 2, 3, 4], 300));
+        resp.truncate(resp.len() - 2); // відрізаємо частину IP-адреси
+        assert!(matches!(
+            parse_response(&resp, 7),
+            Err(DnsError::MalformedResponse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_query_packet() {
+        // Пакет без прапорця QR (це запит, а не відповідь)
+        let q = build_query(7, "example.com", RecordType::A).unwrap();
+        assert!(matches!(
+            parse_response(&q, 7),
+            Err(DnsError::MalformedResponse(_))
+        ));
+    }
+}
