@@ -69,6 +69,13 @@ fn main() -> ExitCode {
                                 println!("{:<5} {}  TTL={}", "CNAME", line, a.ttl);
                                 seen_cnames.push(line);
                             }
+                        } else {
+                            println!(
+                                "{:<5} {:<40} TTL={}",
+                                format!("{:?}", a.record_type),
+                                a.address,
+                                a.ttl
+                            );
                         }
                     }
                 }
@@ -79,7 +86,6 @@ fn main() -> ExitCode {
             }
         }
 
-        // Якщо всі запити завершилися помилкою, показуємо її один раз
         if error_count == types.len() {
             if let Some(e) = last_error {
                 eprintln!("Помилка: {e}");
