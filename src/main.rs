@@ -56,13 +56,20 @@ fn main() -> ExitCode {
         let mut found_any = false;
         let mut last_error = None;
         let mut error_count = 0;
+        let mut seen_cnames: Vec<String> = Vec::new();
 
         for &rtype in &types {
             match resolver::resolve_with_retries(&cli.server, domain, rtype, timeout, cli.retries) {
                 Ok(answers) => {
                     for a in answers {
                         found_any = true;
-                        println!("{:<5} {:<40} TTL={}", format!("{:?}", a.record_type), a.address, a.ttl);
+                        if a.record_type == RecordType::CNAME {
+                            let line = format!("{} -> {}", a.name, a.address);
+                            if !seen_cnames.contains(&line) {
+                                println!("{:<5} {}  TTL={}", "CNAME", line, a.ttl);
+                                seen_cnames.push(line);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
